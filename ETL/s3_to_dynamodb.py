@@ -6,7 +6,10 @@ import os
 import sys
 from colorlog import ColoredFormatter
 import warnings
-import multiprocessing
+from multiprocessing import Process, Queue
+import time
+
+config = botocore.config.Config(retries=dict(max_attempts=50))
 
 def check_bucket(bucket):
     try:
@@ -32,7 +35,14 @@ def read_file(s3, bucket, file):
     next(csv_reader)
     return csv_reader
 
-def write(dynamodb, region, table, csv_reader, file, process_num):
+def write(dynamodb, batch, process_num, num):
+    streamLogger.info('Process: {} | BatchNo: {}'.format(process_num, (num+1)/BATCH))
+    response = dynamodb.batch_write_item(RequestItems=batch)
+    streamLogger.info('Status: {} | Unprocessed: {}'.format(response['ResponseMetadata']['HTTPStatusCode'] , response['UnprocessedItems']))
+    return response['UnprocessedItems']
+
+def write_to_dynamo(dynamodb, region, table, csv_reader, file, process_num):
+    items = []
     for num, row in enumerate(csv_reader):
         if not row: continue
 
@@ -40,34 +50,62 @@ def write(dynamodb, region, table, csv_reader, file, process_num):
         year = row[2]
         bow = row[9]
 
-        response = dynamodb.put_item(TableName = 'articles',               
-            Item = {
-                'uid' : {'S' : str(uid)},                                       #write 'uid' (sort key)
-                'year' : {'N' : str(year)},                                     #write 'year' (partition key)                                  
-                'bow' : {'S' : str(bow)},                                       #write attribute 'bow'
-                'file': {'S' : str(file)}                                       #write attribute 'file'
-            },
-            )
-        status=response['ResponseMetadata']['HTTPStatusCode']
-        attempts=response['ResponseMetadata']['RetryAttempts']
-        streamLogger.info('Status: {} | Attempts: {} | Process: {} | RowNo {}'.format(status, attempts, process_num, num))
+        item = {'PutRequest':{'Item':{
+                        'uid' : {'S' : str(uid)},                                       #write 'uid' (sort key)
+                        'year' : {'N' : str(year)},                                     #write 'year' (partition key)                                  
+                        'bow' : {'S' : str(bow)},                                       #write attribute 'bow'
+                        'file': {'S' : str(file)}                                       #write attribute 'file'
+                    }}}
+        
+        items.append(item)
+
+        if (num + 1) % BATCH == 0:
+            batch = {table : items}
+
+            success = False
+            while not success:
+                try:
+                    unprocessed = write(dynamodb, batch, process_num, num)
+                    if unprocessed == {}:
+                        success = True
+                        items=[]
+                    else:
+                        success = False
+                        streamLogger.critical('Unprocessed data in {} batch {}'.format(process_num, (num+1)/BATCH))
+                except Exception as e:
+                    streamLogger.warning('Exception while writing {} batch {}'.format(process_num, (num+1)/BATCH))
+                    streamLogger.warning(e)
+                    time.sleep(30)
+                
+            if (num + 1) % 100==0:
+                streamLogger.warning('Process {} has written 100 - sleeping 30s'.format(process_num))
+                time.sleep(30)
+
+            
+        
+    streamLogger.info('PROCESS {} FINISHED!!!!!'.format(process_num))
 
 def s3_to_dynamodb(key, secret, bucket, region, table, file, process_num):
 
-    s3 = boto3.client('s3', aws_access_key_id=key, aws_secret_access_key=secret)
+    s3 = boto3.client(
+                      service_name='s3', 
+                      aws_access_key_id=key, 
+                      aws_secret_access_key=secret
+        )
 
     dynamodb = boto3.client(
-            service_name='dynamodb',
-            aws_access_key_id=key,
-            aws_secret_access_key=secret,
-            verify=False,
-            region_name=region
+                            service_name='dynamodb',
+                            aws_access_key_id=key,
+                            aws_secret_access_key=secret,
+                            verify=False,
+                            region_name=region,
+                            config=config
         )
 
     streamLogger.info('Spawned Process [{}] reading file {}'.format(process_num,file))
     csv_reader = read_file(s3, bucket, file)
     streamLogger.info('Spawned Process [{}] read successful'.format(process_num))
-    write(dynamodb, region, table, csv_reader, file, process_num)
+    write_to_dynamo(dynamodb, region, table, csv_reader, file, process_num)
 
 ############### Logging Configuration ###############
 streamFormatter = "%(asctime)3s  %(log_color)s%(levelname)-3s%(reset)s %(white)s | %(message)s%(reset)s"
@@ -93,7 +131,7 @@ args = parser.parse_args()
 BUCKET = args.bucket
 TABLE = args.table
 REGION = args.region
-
+BATCH = 25
 ############### AWS CREDENTIALS ###############
 KEY = os.environ['AWS_KEY']
 SECRET = os.environ['AWS_SECRET']
@@ -148,15 +186,14 @@ if __name__ == '__main__':
     
     streamLogger.info('Found [{}] csv files'.format(len(csv_files)))
 
-    WORKERS=multiprocessing.cpu_count() - 1
-    streamLogger.info('Monopolising {} cpu cores'.format(WORKERS))
-    pool = multiprocessing.Pool(processes=WORKERS)
+    processes=[]
 
     for num, file in enumerate(csv_files):
-        pool.apply_async(s3_to_dynamodb, args=(KEY, SECRET, BUCKET, REGION, TABLE, file, num))
-    pool.close()
-    pool.join()
+        p = Process(target=s3_to_dynamodb, args=(KEY, SECRET, BUCKET, REGION, TABLE, file, num))
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
 
     streamLogger.info('Write to DynamoDB Complete!')
-    
-
