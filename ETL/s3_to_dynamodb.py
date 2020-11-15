@@ -82,7 +82,9 @@ def write_to_dynamo(dynamodb, region, table, csv_reader, file, process_num):
                 time.sleep(30)
 
             
-        
+    if items:
+        batch = {table : items}
+        write(dynamodb, batch, process_num, num)  
     streamLogger.info('PROCESS {} FINISHED!!!!!'.format(process_num))
 
 def s3_to_dynamodb(key, secret, bucket, region, table, file, process_num):
