@@ -48,12 +48,14 @@ def write_to_dynamo(dynamodb, region, table, csv_reader, file, process_num):
 
         uid = row[0]
         year = row[2]
+        pub = row[8]
         bow = row[9]
 
         item = {'PutRequest':{'Item':{
                         'uid' : {'S' : str(uid)},                                       #write 'uid' (sort key)
                         'year' : {'N' : str(year)},                                     #write 'year' (partition key)                                  
                         'bow' : {'S' : str(bow)},                                       #write attribute 'bow'
+                        'publication' : {'S' : str(pub)},                               #write 'publication' attribute
                         'file': {'S' : str(file)}                                       #write attribute 'file'
                     }}}
         
