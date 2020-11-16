@@ -5,6 +5,8 @@ from utils import *
 from multiprocessing import Process, Queue
 import time
 import random
+from queue import Empty
+
 
 
 
@@ -75,13 +77,25 @@ def temporal_topic_extraction(year: int, sample_size: int, dynamodb, throttled=T
         p.start()
         processes.append(p)
 
-    time.sleep(120)
-    while not q.empty():
-        uids.append(q.get())
 
-    print(len(uids))  
+    liveprocs = processes.copy()
+    while liveprocs:
+        try:
+            while 1:
+                print('Flushing Queue pipes for UIDs')
+                uids.append(q.get(False))
+        except Empty:
+            pass
+
+        time.sleep(0.5)    # Give tasks a chance to put more data in
+        if not q.empty():
+            continue
+        liveprocs = [p for p in liveprocs if p.is_alive()]
+  
     for pos, p in enumerate(processes):
-        print('Getting sampled UIDs from process', pos)
+        # print('Getting sampled UIDs from process', pos)
+        # uids.append( yield_from_process(q, p) )
+        print('joining process', pos)
         p.join()
         # uids.append(q.get())
         
@@ -92,21 +106,28 @@ def temporal_topic_extraction(year: int, sample_size: int, dynamodb, throttled=T
     processes=[]
     data= []
     for pos, uid_set in enumerate(uids):
-        print('Getting BOWs for month', pos+1)
+        print('Creating process for BOWs for month', pos+1)
         p = Process(target=query_uid_set, args=(year, uid_set, dynamodb, q, False))
         p.start()
         processes.append(p)
 
-    time.sleep(150)
-    cnt = 1
-    while not q.empty():
+    liveprocs = processes.copy()
+    while liveprocs:
+        try:
+            while 1:
+                print('Flushing Queue pipes for BOWs')
+                data.append(q.get(False))
+        except Empty:
+            pass
 
-        print('Added BOWs for month', cnt)
-        data.append(q.get())
-        cnt += 1
+        time.sleep(0.5)    # Give tasks a chance to put more data in
+        if not q.empty():
+            continue
+        liveprocs = [p for p in liveprocs if p.is_alive()]
+
+
 
     for pos, p in enumerate(processes):
-        print('closing process', pos)
         p.join()
 
 
@@ -124,7 +145,7 @@ def query_uid_set(year, uid_set, dynamodb, q=None, single_thread=False):
 
     else: 
         q.put(bow_arrays)
-        print('Done')
+
 
 
 def sample_uids(sample_size, year, month, dynamodb, q, throttled):
