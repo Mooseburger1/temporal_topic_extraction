@@ -21,6 +21,14 @@ def load_cached_uids(year: int, month: int) -> np.array:
     file = os.path.join(os.path.expanduser('~'),os.path.join('topic_analysis',os.path.join(str(year), os.path.join(month, 'uid.npy'))))
     return np.load(file)
 
+def load_cached_uid_days(year: int, month: int, day: int):
+
+    all_uids = load_cached_uids(year=year, month=month)
+
+    day_uid = '{}.{}'.format(month, day)
+
+    return np.array([uid for uid in all_uids if  '.'.join(str(uid).split('.')[:2])==day_uid])
+
 
 def cache_uids(year: int, month: int, data: np.array):
     if len(data) != 0:

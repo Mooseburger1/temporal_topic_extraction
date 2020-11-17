@@ -181,7 +181,7 @@ if __name__ == '__main__':
         sys.exit()
 
 
-    objs = bucket.objects.filter(Prefix='clean')
+    objs = bucket.objects.filter(Prefix='clean2')
     csv_files = [file.key for file in objs if file.key.endswith('.csv')]
     
     if len(csv_files) == 0:
