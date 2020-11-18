@@ -8,6 +8,31 @@ import random
 from queue import Empty
 from calendar import monthrange
 
+def cache_uids_from_year(year, dynamodb, throttled=False, verbose=True):
+    processes = []
+
+    print('Starting.....')
+    for i in range(1,13):
+        if verbose:
+            print('Creating process {} to cache UIDs for month {}'.format(i, i))
+        p = Process(target=get_uids_months, args=(year, i, dynamodb, throttled, verbose))
+        p.start()
+        processes.append(p)
+
+
+    for pos, p in enumerate(processes):
+        if verbose:
+            print('joining process', pos)
+        p.join()
+
+    print('validating cache')
+    for i in range(1,13):
+        if check_for_cached_uid(year=year, month=i): continue
+        else: print(r'[Warning]: Caching operations for month {} returned nothing'.format(i))
+    
+    print('Done.')
+
+
 
 def query_by_month(year, month, dynamodb):
 
@@ -62,18 +87,22 @@ def single_query(year, uid, dynamodb):
             response['Items'][0]['file'])
 
 
-def get_uids_months(year: int, month: int, dynamodb, throttled):
+def get_uids_months(year: int, month: int, dynamodb, throttled, verbose):
     
     #check if uids have already been cached
-    print('Checking for cached UIDs for {}/{}'.format(year, month))
+    if verbose:
+        print('Checking for cached UIDs for {}/{}'.format(year, month))
     if check_for_cached_uid(year=year, month=month):
-        print('Cache found - loading from local')
+        if verbose:
+            print('Cache found - loading from local')
         uids = load_cached_uids(year=year, month=month)
         return uids
     else:
-        print('No cached UIDs found for {}/{} - Pulling from dynamodb........This may take a few moments'.format(year, month))
+        if verbose:
+            print('No cached UIDs found for {}/{} - Pulling from dynamodb........This may take a few moments'.format(year, month))
         uids = accumulate_uids(year=year, month=month, db=dynamodb, throttled=throttled)
-        print('Caching {} UIDs for {}/{}'.format(len(uids),year, month))
+        if verbose:
+            print('Caching {} UIDs for {}/{}'.format(len(uids),year, month))
         cache_uids(year=year, month=month, data=uids)
         return uids
 
@@ -82,12 +111,13 @@ def get_uids_days(year: int, month: int, day: int):
     return load_cached_uid_days(year=year, month=month, day=day)
 
 
-def keepalive_accumulate(q, processes, storage_obj):
+def keepalive_accumulate(q, processes, storage_obj, verbose):
     liveprocs = processes.copy()
     while liveprocs:
         try:
             while 1:
-                print('Flushing Queue pipes for UIDs')
+                if verbose:
+                    print('Flushing Queue pipes for UIDs')
                 storage_obj.append(q.get(False))
         except Empty:
             pass
@@ -99,23 +129,25 @@ def keepalive_accumulate(q, processes, storage_obj):
     
     return storage_obj
 
-def temporal_topic_extraction_whole_year(year: int, sample_size: int, dynamodb, throttled=True):
+def bows_year(year: int, sample_size: int, dynamodb, throttled=True, verbose=True):
     
     q = Queue()
     processes = []
     uids = []
     
     for i in range(1,13):
-        print('Creating process {} to sample UIDs for month {}'.format(i, i+1))
-        p = Process(target=sample_uids_months, args=(sample_size, year, i, dynamodb, q, throttled))
+        if verbose:
+            print('Creating process {} to sample UIDs for month {}'.format(i, i+1))
+        p = Process(target=sample_uids_months, args=(sample_size, year, i, dynamodb, q, throttled, verbose))
         p.start()
         processes.append(p)
 
 
-    uids = keepalive_accumulate(q, processes, uids)
+    uids = keepalive_accumulate(q, processes, uids, verbose)
   
     for pos, p in enumerate(processes):
-        print('joining process', pos)
+        if verbose:
+            print('joining process', pos)
         p.join()
         
         
@@ -126,14 +158,17 @@ def temporal_topic_extraction_whole_year(year: int, sample_size: int, dynamodb, 
     processes=[]
     data= []
     for pos, uid_set in enumerate(uids):
-        print('Creating process for BOWs for month', pos+1)
+        if verbose:
+            print('Creating process for BOWs for month', pos+1)
         p = Process(target=query_uid_set, args=(year, uid_set, dynamodb, q, False))
         p.start()
         processes.append(p)
 
-    data = keepalive_accumulate(q, processes, data)
+    data = keepalive_accumulate(q, processes, data, verbose)
 
     for pos, p in enumerate(processes):
+        if verbose:
+            print('Joining process', pos)
         p.join()
 
 
@@ -154,8 +189,8 @@ def query_uid_set(year, uid_set, dynamodb, q=None, single_thread=False):
 
 
 
-def sample_uids_months(sample_size, year, month, dynamodb, q, throttled):
-    uids = get_uids_months(year=year, month=month, dynamodb=dynamodb, throttled=throttled)
+def sample_uids_months(sample_size, year, month, dynamodb, q, throttled, verbose=True):
+    uids = get_uids_months(year=year, month=month, dynamodb=dynamodb, throttled=throttled, verbose=verbose)
     sys_random = random.SystemRandom()
     try:
         rand = np.array(sys_random.sample(set(uids), sample_size, ))
@@ -168,25 +203,26 @@ def sample_uids_days(sample_size, year, month, day, q):
     sys_random = random.SystemRandom()
 
     try:
-        print(len(uids))
         rand = np.array(sys_random.choices(list(set(uids)), k=sample_size))
         q.put( rand )
     except ValueError:
         q.put(None)
 
 
-def temporal_topic_extraction_whole_month(year: int, month: int, sample_size: int, dynamodb, throttled=True):
+def bows_month(year: int, month: int, sample_size: int, dynamodb, throttled=True, verbose=True):
     
     #check if uids have already been cached
-    print('Checking for cached UIDs for {}/{}'.format(year, month))
+    if verbose:
+        print('Checking for cached UIDs for {}/{}'.format(year, month))
     if check_for_cached_uid(year=year, month=month):
-        print('Cache found - loading from local')
+        if verbose:
+            print('Cache found - loading from local')
     else:
-        print('No cached UIDs found for {}/{} - Pulling from dynamodb........This may take a few moments'.format(year, month))
+        if verbose:
+            print('No cached UIDs found for {}/{} - Pulling from dynamodb........This may take a few moments'.format(year, month))
         uids = accumulate_uids(year=year, month=month, db=dynamodb, throttled=throttled)
-        for x in uids:
-            print(x)
-        print('Caching {} UIDs for {}/{}'.format(len(uids),year, month))
+        if verbose:
+            print('Caching {} UIDs for {}/{}'.format(len(uids),year, month))
         cache_uids(year=year, month=month, data=uids)
 
     q = Queue()
@@ -195,16 +231,18 @@ def temporal_topic_extraction_whole_month(year: int, month: int, sample_size: in
     
     num_of_days = monthrange(year, month)[1]
     for i in range(1, num_of_days+1):
-        print('Creating process {} to sample UIDs for day {}'.format(i, i))
+        if verbose:
+            print('Creating process {} to sample UIDs for day {}'.format(i, i))
         p = Process(target=sample_uids_days, args=(sample_size, year, month, i, q))
         p.start()
         processes.append(p)
 
 
-    uids = keepalive_accumulate(q, processes, uids)
+    uids = keepalive_accumulate(q, processes, uids, verbose)
   
     for pos, p in enumerate(processes):
-        print('joining process', pos)
+        if verbose:
+            print('joining process', pos)
         p.join()
         
         
@@ -215,12 +253,13 @@ def temporal_topic_extraction_whole_month(year: int, month: int, sample_size: in
     processes=[]
     data= []
     for pos, uid_set in enumerate(uids):
-        print('Creating process for BOWs for day', pos+1)
+        if verbose:
+            print('Creating process for BOWs for day', pos+1)
         p = Process(target=query_uid_set, args=(year, uid_set, dynamodb, q, False))
         p.start()
         processes.append(p)
 
-    data = keepalive_accumulate(q, processes, data)
+    data = keepalive_accumulate(q, processes, data, verbose)
 
     for pos, p in enumerate(processes):
         p.join()

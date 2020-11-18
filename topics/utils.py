@@ -1,6 +1,8 @@
 import os
 import sys
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 def load_cached_uids(year: int, month: int) -> np.array:
     month_mapper = {'1': 'jan',
@@ -141,6 +143,29 @@ def check_for_cached_uid(year: int, month: int) -> bool:
                 else: return True
 
 
+def plotit(data, title, yaxis=None, xaxis=None, ylabel=None, xlabel=None):
+    plt.figure(figsize=(15,8))
+    sns.heatmap(data, cmap='Blues')
+    plt.title(title)
+    if yaxis:
+        plt.yticks(range(len(yaxis)),yaxis, rotation=0)
+    if xaxis:
+        plt.xticks(xaxis)
+    if ylabel:
+        plt.ylabel(ylabel)
+    if xlabel:
+        plt.xlabel(xlabel)
+    plt.show()
+
+
+# function to convert the most important vectorized terms back to words
+def get_topics(data, threshold, vectorizer):
+    
+    #extract the location of the highest values above threshold sorted highest to lowest
+    top_words = sorted(np.argwhere(data > threshold).ravel().tolist(), reverse=True)
+    
+    #convert back to words and return
+    return np.array(vectorizer.get_feature_names())[top_words]
 
 
 
