@@ -8,14 +8,14 @@ import random
 from queue import Empty
 from calendar import monthrange
 
-def cache_uids_from_year(year, dynamodb, throttled=False, verbose=True):
+def cache_uids_from_year(year, key, secret, throttled=False, verbose=True):
     processes = []
 
     print('Starting.....')
     for i in range(1,13):
         if verbose:
             print('Creating process {} to cache UIDs for month {}'.format(i, i))
-        p = Process(target=get_uids_months, args=(year, i, dynamodb, throttled, verbose))
+        p = Process(target=get_uids_months, args=(year, i, key, secret, throttled, verbose))
         p.start()
         processes.append(p)
 
@@ -34,21 +34,29 @@ def cache_uids_from_year(year, dynamodb, throttled=False, verbose=True):
 
 
 
-def query_by_month(year, month, dynamodb):
+def query_by_month(year, month, key, secret):
+    
 
     query_constraints = Key('year').eq(year) & Key('uid').between('{}.0.0'.format(month), '{}.31.9999999'.format(month))
 
-    return uid_page_iterator(constraints=query_constraints, dynamodb=dynamodb)
+    return uid_page_iterator(constraints=query_constraints, key=key, secret=secret)
 
 
-def query_by_day(year, month, day, dynamodb):
+def query_by_day(year, month, day, key, secret):
+    
+    
     
     query_constraints = Key('year').eq(year) & Key('uid').between('{}.{}.0'.format(month,day), '{}.{}.9999999'.format(month,day))
 
-    return uid_page_iterator(constraints=query_constraints, dynamodb=dynamodb)
+    return uid_page_iterator(constraints=query_constraints, key=key, secret=secret)
 
 
-def uid_page_iterator(constraints, dynamodb):
+def uid_page_iterator(constraints, key, secret):
+    dynamodb = boto3.resource(service_name='dynamodb',
+                    region_name='us-east-1',
+                    aws_access_key_id=key,
+                    aws_secret_access_key=secret)
+    
     paginator = dynamodb.meta.client.get_paginator('query')
     page_iterator = paginator.paginate(
         TableName='articles2',
@@ -59,11 +67,12 @@ def uid_page_iterator(constraints, dynamodb):
     return page_iterator
 
 
-def accumulate_uids(year: int, month: int, db, throttled=True) -> np.array:
+def accumulate_uids(year: int, month: int, key, secret, throttled=True) -> np.array:
+    
     uids = []
     
     query_constraints = Key('year').eq(year) & Key('uid').between('{}.0.0'.format(month), '{}.99.9999999'.format(month))
-    response = uid_page_iterator(query_constraints, dynamodb=db)
+    response = uid_page_iterator(query_constraints, key=key, secret=secret)
     
     for page in response:
         items = page['Items']
@@ -75,7 +84,13 @@ def accumulate_uids(year: int, month: int, db, throttled=True) -> np.array:
     return np.array(uids)
 
 
-def single_query(year, uid, dynamodb):
+def single_query(year, uid, key, secret):
+    
+    dynamodb = boto3.resource(service_name='dynamodb',
+                    region_name='us-east-1',
+                    aws_access_key_id=key,
+                    aws_secret_access_key=secret)
+    
     response = dynamodb.meta.client.query(
         TableName='articles2',
         KeyConditionExpression=Key('year').eq(year) & Key('uid').eq(uid)
@@ -87,7 +102,9 @@ def single_query(year, uid, dynamodb):
             response['Items'][0]['file'])
 
 
-def get_uids_months(year: int, month: int, dynamodb, throttled, verbose):
+def get_uids_months(year: int, month: int, key, secret, throttled, verbose):
+    
+    
     
     #check if uids have already been cached
     if verbose:
@@ -100,7 +117,7 @@ def get_uids_months(year: int, month: int, dynamodb, throttled, verbose):
     else:
         if verbose:
             print('No cached UIDs found for {}/{} - Pulling from dynamodb........This may take a few moments'.format(year, month))
-        uids = accumulate_uids(year=year, month=month, db=dynamodb, throttled=throttled)
+        uids = accumulate_uids(year=year, month=month, key=key, secret=secret, throttled=throttled)
         if verbose:
             print('Caching {} UIDs for {}/{}'.format(len(uids),year, month))
         cache_uids(year=year, month=month, data=uids)
@@ -129,7 +146,7 @@ def keepalive_accumulate(q, processes, storage_obj, verbose):
     
     return storage_obj
 
-def bows_year(year: int, sample_size: int, dynamodb, throttled=True, verbose=True):
+def bows_year(year: int, sample_size: int, key, secret, throttled=True, verbose=True):
     
     q = Queue()
     processes = []
@@ -138,7 +155,7 @@ def bows_year(year: int, sample_size: int, dynamodb, throttled=True, verbose=Tru
     for i in range(1,13):
         if verbose:
             print('Creating process {} to sample UIDs for month {}'.format(i, i+1))
-        p = Process(target=sample_uids_months, args=(sample_size, year, i, dynamodb, q, throttled, verbose))
+        p = Process(target=sample_uids_months, args=(sample_size, year, i, key, secret, q, throttled, verbose))
         p.start()
         processes.append(p)
 
@@ -160,7 +177,7 @@ def bows_year(year: int, sample_size: int, dynamodb, throttled=True, verbose=Tru
     for pos, uid_set in enumerate(uids):
         if verbose:
             print('Creating process for BOWs for month', pos+1)
-        p = Process(target=query_uid_set, args=(year, uid_set, dynamodb, q, False))
+        p = Process(target=query_uid_set, args=(year, uid_set, key, secret, q, False))
         p.start()
         processes.append(p)
 
@@ -175,11 +192,11 @@ def bows_year(year: int, sample_size: int, dynamodb, throttled=True, verbose=Tru
     return data
 
 
-def query_uid_set(year, uid_set, dynamodb, q=None, single_thread=False):
+def query_uid_set(year, uid_set, key, secret, q=None, single_thread=False):
     bow_arrays = []
 
     for uid in uid_set:
-        bow, _, _, _ = single_query(year, uid, dynamodb)
+        bow, _, _, _ = single_query(year, uid, key, secret)
         bow_arrays.append(bow)
         
     if single_thread: return bow_arrays
@@ -189,8 +206,11 @@ def query_uid_set(year, uid_set, dynamodb, q=None, single_thread=False):
 
 
 
-def sample_uids_months(sample_size, year, month, dynamodb, q, throttled, verbose=True):
-    uids = get_uids_months(year=year, month=month, dynamodb=dynamodb, throttled=throttled, verbose=verbose)
+def sample_uids_months(sample_size, year, month, key, secret, q, throttled, verbose=True):
+    
+    
+    
+    uids = get_uids_months(year=year, month=month, key=key, secret=secret, throttled=throttled, verbose=verbose)
     sys_random = random.SystemRandom()
     try:
         rand = np.array(sys_random.sample(set(uids), sample_size, ))
@@ -209,7 +229,12 @@ def sample_uids_days(sample_size, year, month, day, q):
         q.put(None)
 
 
-def bows_month(year: int, month: int, sample_size: int, dynamodb, throttled=True, verbose=True):
+def bows_month(year: int, month: int, sample_size: int, key, secret, throttled=True, verbose=True):
+    
+    dynamodb = boto3.resource(service_name='dynamodb',
+                    region_name='us-east-1',
+                    aws_access_key_id=key,
+                    aws_secret_access_key=secret)
     
     #check if uids have already been cached
     if verbose:
@@ -220,7 +245,7 @@ def bows_month(year: int, month: int, sample_size: int, dynamodb, throttled=True
     else:
         if verbose:
             print('No cached UIDs found for {}/{} - Pulling from dynamodb........This may take a few moments'.format(year, month))
-        uids = accumulate_uids(year=year, month=month, db=dynamodb, throttled=throttled)
+        uids = accumulate_uids(year=year, month=month, key=key, secret=secret, throttled=throttled)
         if verbose:
             print('Caching {} UIDs for {}/{}'.format(len(uids),year, month))
         cache_uids(year=year, month=month, data=uids)
@@ -255,7 +280,7 @@ def bows_month(year: int, month: int, sample_size: int, dynamodb, throttled=True
     for pos, uid_set in enumerate(uids):
         if verbose:
             print('Creating process for BOWs for day', pos+1)
-        p = Process(target=query_uid_set, args=(year, uid_set, dynamodb, q, False))
+        p = Process(target=query_uid_set, args=(year, uid_set, key, secret, q, False))
         p.start()
         processes.append(p)
 
